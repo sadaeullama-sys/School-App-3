@@ -84,10 +84,9 @@ jobs:
           p = Path("android/app/build.gradle.kts")
           s = p.read_text()
 
-          # Always ensure a RELEASE signing config exists. The generated
-          # Flutter template may mention signingConfigs for DEBUG only.
-          if 'create("release")' not in s and "maybeCreate(\"release\")" not in s:
-              release_config = """
+          # Add the release signing configuration inside android { }.
+          if 'create("release")' not in s and 'getByName("release")' not in s:
+              block = """
               signingConfigs {
                   create("release") {
                       val props = java.util.Properties()
@@ -102,36 +101,49 @@ jobs:
               }
 
           """
-              # Insert the config directly inside the android { } block,
-              # before buildTypes. Do not rely on whether the word
-              # signingConfigs appears elsewhere in the template.
               marker = "    buildTypes {"
               if marker not in s:
                   marker = "  buildTypes {"
               if marker not in s:
-                  raise SystemExit("Could not find buildTypes in android/app/build.gradle.kts")
-              s = s.replace(marker, release_config + marker, 1)
+                  raise SystemExit("Could not find buildTypes block in android/app/build.gradle.kts")
+              s = s.replace(marker, block + marker, 1)
 
-          # Make the release build use the upload key.
-          release_block = re.search(r'(?m)^\\s*getByName\\("release"\\)\\s*\\{', s)
-          if release_block:
-              block_start = release_block.end()
-              if 'signingConfig = signingConfigs.getByName("release")' not in s[block_start:block_start+500]:
-                  s = s[:block_start] + '\\n            signingConfig = signingConfigs.getByName("release")' + s[block_start:]
-          else:
-              raise SystemExit('Could not find getByName("release") build type')
+          # Flutter's generated Kotlin DSL commonly uses release { ... }
+          # rather than getByName("release") { ... }. Replace debug signing
+          # in the release build type regardless of that syntax.
+          m = re.search(r'(?m)^([ \\t]*)(release)\\s*\\{', s)
+          if not m:
+              m = re.search(r'(?m)^([ \\t]*)create\\("release"\\)\\s*\\{', s)
+          if not m:
+              raise SystemExit("Could not find release build type block in android/app/build.gradle.kts")
 
-          # Remove any accidental debug signing assignment in release block.
-          s = re.sub(
-              r'(getByName\\("release"\\)\\s*\\{[^}]*?)signingConfig\\s*=\\s*signingConfigs\\.getByName\\("debug"\\)',
-              r'\\1signingConfig = signingConfigs.getByName("release")',
-              s,
-              count=1,
-              flags=re.S
+          # Find matching closing brace for the release block.
+          open_brace = s.find("{", m.start())
+          depth = 0
+          close_brace = None
+          for i in range(open_brace, len(s)):
+              if s[i] == "{":
+                  depth += 1
+              elif s[i] == "}":
+                  depth -= 1
+                  if depth == 0:
+                      close_brace = i
+                      break
+          if close_brace is None:
+              raise SystemExit("Could not parse release build type block")
+
+          body = s[open_brace+1:close_brace]
+          body = re.sub(
+              r'signingConfig\\s*=\\s*signingConfigs\\.getByName\\("debug"\\)',
+              'signingConfig = signingConfigs.getByName("release")',
+              body
           )
+          if 'signingConfig = signingConfigs.getByName("release")' not in body:
+              body = '\\n            signingConfig = signingConfigs.getByName("release")' + body
+          s = s[:open_brace+1] + body + s[close_brace:]
 
           p.write_text(s)
-          print("Release signing configuration added.")
+          print("Release signing configuration successfully added.")
           PY
 
       - name: Build release APK (Lint workaround)
