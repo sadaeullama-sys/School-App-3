@@ -77,22 +77,31 @@ jobs:
       - name: Configure release signing
         shell: bash
         run: |
+          # Use the legacy Android Gradle DSL supported by Flutter's generated
+          # project while AGP 9 transitions to the new DSL.
+          if ! grep -q '^android.newDsl=' android/gradle.properties 2>/dev/null; then
+            echo 'android.newDsl=false' >> android/gradle.properties
+          fi
+
           python3 - <<'PY'
           from pathlib import Path
 
           p = Path("android/app/build.gradle.kts")
           s = p.read_text()
 
-          # Add a second android {} configuration block. Gradle merges
-          # Android extension configuration blocks, so this avoids relying
-          # on Flutter-template-specific release block formatting.
-          signing = r"""
+          # Kotlin DSL needs the Java Properties class imported explicitly.
+          if "import java.util.Properties" not in s:
+              s = "import java.util.Properties\n" + s
 
-          // Added by CI: use the existing Play upload key for release builds.
+          marker = "// Added by CI: release signing configuration"
+          if marker not in s:
+              signing = r"""
+
+          // Added by CI: release signing configuration
           android {
               signingConfigs {
-                  maybeCreate("release").apply {
-                      val props = java.util.Properties()
+                  create("release") {
+                      val props = Properties()
                       val propsFile = rootProject.file("key.properties")
                       require(propsFile.exists()) { "android/key.properties is missing" }
                       props.load(propsFile.inputStream())
@@ -102,16 +111,16 @@ jobs:
                       keyPassword = props["keyPassword"] as String
                   }
               }
-              buildTypes.configureEach {
-                  if (name == "release") {
+              buildTypes {
+                  getByName("release") {
                       signingConfig = signingConfigs.getByName("release")
                   }
               }
           }
           """
-          if "// Added by CI: use the existing Play upload key" not in s:
-              p.write_text(s.rstrip() + signing + "\n")
-          print("Release signing configuration appended.")
+              s = s.rstrip() + signing + "\n"
+          p.write_text(s)
+          print("Release signing configuration added.")
           PY
 
       - name: Build release APK (Lint workaround)
