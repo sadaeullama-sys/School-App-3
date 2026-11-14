@@ -1684,6 +1684,9 @@ class _HomePageState extends State<HomePage> {
         'students': s, 'fees': f, 'attendance': a, 'marks': m,
         'transport': t, 'salaries': sal, 'expenses': ex, 'notices': n,
         'syllabus': sy, 'dateSheet': ds,
+        // Staff and parent account records must sync too, otherwise a second
+        // device cannot load the accounts/permissions created by the Principal.
+        'staff': stf, 'parents': par,
         'stock': stk, 'stockIssues': iss,
       };
       try {
@@ -1767,8 +1770,10 @@ class _HomePageState extends State<HomePage> {
         'students': students, 'fees': fees, 'attendance': attendance,
         'marks': marks, 'transport': transport, 'salaries': salaries,
         'expenses': expenses, 'notices': notices, 'syllabus': syllabusItems,
-        'dateSheet': dateSheetItems, 'stock': stockRecords,
-        'stockIssues': stockIssues,
+        'dateSheet': dateSheetItems,
+        // Keep Principal-assigned staff/parent accounts and permissions in cloud.
+        'staff': staffRecords, 'parents': parentRecords,
+        'stock': stockRecords, 'stockIssues': stockIssues,
       };
       try {
         final batch = FirebaseFirestore.instance.batch();
