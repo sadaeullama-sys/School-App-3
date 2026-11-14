@@ -30,7 +30,7 @@ jobs:
           channel: stable
           cache: true
 
-      # Your repository has lib/ and pubspec.yaml but no android/ folder.
+      # This repository has lib/ and pubspec.yaml but no android/ folder.
       - name: Generate Android platform files
         run: flutter create --project-name school_management_system --org com.ilyasmobile --platforms android .
 
@@ -49,24 +49,27 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      # The Play Store AAB must be signed with the SAME upload key
-      # used for the existing Play Console app.
+      # The AAB must use the upload key registered for this Play Console app.
       - name: Configure Play Store upload signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
         run: |
           if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
-            echo "Missing signing secrets. Add the four Android signing secrets in GitHub before building a Play Store AAB."
+            echo "Missing signing secrets. Add all four ANDROID_* repository secrets."
             exit 1
           fi
+
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$GITHUB_WORKSPACE/upload-keystore.jks"
+
           if [ ! -s "$GITHUB_WORKSPACE/upload-keystore.jks" ]; then
             echo "Keystore could not be decoded."
             exit 1
           fi
+
           cat > "$GITHUB_WORKSPACE/android/key.properties" <<EOF
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           keyPassword=$ANDROID_KEY_PASSWORD
@@ -77,8 +80,8 @@ jobs:
       - name: Configure release signing
         shell: bash
         run: |
-          # Use the legacy Android Gradle DSL supported by Flutter's generated
-          # project while AGP 9 transitions to the new DSL.
+          # Keep compatibility with the Android Gradle DSL used by the
+          # Flutter-generated project on this CI runner.
           if ! grep -q '^android.newDsl=' android/gradle.properties 2>/dev/null; then
             echo 'android.newDsl=false' >> android/gradle.properties
           fi
@@ -89,7 +92,6 @@ jobs:
           p = Path("android/app/build.gradle.kts")
           s = p.read_text()
 
-          # Kotlin DSL needs the Java Properties class imported explicitly.
           if "import java.util.Properties" not in s:
               s = "import java.util.Properties\n" + s
 
@@ -119,6 +121,7 @@ jobs:
           }
           """
               s = s.rstrip() + signing + "\n"
+
           p.write_text(s)
           print("Release signing configuration added.")
           PY
@@ -142,18 +145,42 @@ jobs:
             -x lintVitalAnalyzeRelease -x lintVitalReportRelease \
             -x lintVitalRelease --stacktrace
 
-      - name: Verify APK and AAB
+      # Flutter/Gradle output folders can vary. Find the actual files and
+      # stage them in one predictable folder for the artifact upload step.
+      - name: Find and prepare APK and AAB
+        shell: bash
         run: |
-          test -s android/app/build/outputs/apk/release/app-release.apk
-          test -s android/app/build/outputs/bundle/release/app-release.aab
-          ls -lh android/app/build/outputs/apk/release/app-release.apk
-          ls -lh android/app/build/outputs/bundle/release/app-release.aab
+          set -e
+          mkdir -p artifacts
+
+          echo "Searching for generated APK files..."
+          find android -type f -name "*.apk" -print
+
+          echo "Searching for generated AAB files..."
+          find android -type f -name "*.aab" -print
+
+          APK_FILE="$(find android -type f -name "*.apk" | head -n 1)"
+          AAB_FILE="$(find android -type f -name "*.aab" | head -n 1)"
+
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: No APK file was found under android/."
+            exit 1
+          fi
+
+          if [ -z "$AAB_FILE" ]; then
+            echo "ERROR: No AAB file was found under android/."
+            exit 1
+          fi
+
+          cp "$APK_FILE" artifacts/School-Management-System.apk
+          cp "$AAB_FILE" artifacts/School-Management-System.aab
+
+          echo "Prepared files:"
+          ls -lh artifacts/
 
       - name: Upload APK and AAB
         uses: actions/upload-artifact@v4
         with:
           name: School-Management-System-APK-and-AAB
-          path: |
-            android/app/build/outputs/apk/release/app-release.apk
-            android/app/build/outputs/bundle/release/app-release.aab
+          path: artifacts/*
           if-no-files-found: error
