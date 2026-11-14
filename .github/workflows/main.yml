@@ -49,7 +49,6 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      # The AAB must use the upload key registered for this Play Console app.
       - name: Configure Play Store upload signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -80,8 +79,6 @@ jobs:
       - name: Configure release signing
         shell: bash
         run: |
-          # Keep compatibility with the Android Gradle DSL used by the
-          # Flutter-generated project on this CI runner.
           if ! grep -q '^android.newDsl=' android/gradle.properties 2>/dev/null; then
             echo 'android.newDsl=false' >> android/gradle.properties
           fi
@@ -126,56 +123,43 @@ jobs:
           print("Release signing configuration added.")
           PY
 
-      - name: Build release APK (Lint workaround)
-        working-directory: android
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease \
-            -x lint -x lintDebug -x lintRelease \
-            -x lintAnalyzeDebug -x lintAnalyzeRelease \
-            -x lintVitalAnalyzeRelease -x lintVitalReportRelease \
-            -x lintVitalRelease --stacktrace
+      # Use Flutter CLI so outputs are placed in Flutter's standard build/
+      # directory, not assumed to be under android/app/build/.
+      - name: Build release APK
+        run: flutter build apk --release
 
-      - name: Build signed Play Store AAB (Lint workaround)
-        working-directory: android
-        run: |
-          ./gradlew bundleRelease \
-            -x lint -x lintDebug -x lintRelease \
-            -x lintAnalyzeDebug -x lintAnalyzeRelease \
-            -x lintVitalAnalyzeRelease -x lintVitalReportRelease \
-            -x lintVitalRelease --stacktrace
+      - name: Build signed Play Store AAB
+        run: flutter build appbundle --release
 
-      # Flutter/Gradle output folders can vary. Find the actual files and
-      # stage them in one predictable folder for the artifact upload step.
       - name: Find and prepare APK and AAB
         shell: bash
         run: |
           set -e
           mkdir -p artifacts
 
-          echo "Searching for generated APK files..."
-          find android -type f -name "*.apk" -print
+          echo "Searching the whole workspace for APK files..."
+          find . -type f -name "*.apk" -not -path "./.git/*" -print
 
-          echo "Searching for generated AAB files..."
-          find android -type f -name "*.aab" -print
+          echo "Searching the whole workspace for AAB files..."
+          find . -type f -name "*.aab" -not -path "./.git/*" -print
 
-          APK_FILE="$(find android -type f -name "*.apk" | head -n 1)"
-          AAB_FILE="$(find android -type f -name "*.aab" | head -n 1)"
+          APK_FILE="$(find build android -type f -name "*.apk" 2>/dev/null | head -n 1 || true)"
+          AAB_FILE="$(find build android -type f -name "*.aab" 2>/dev/null | head -n 1 || true)"
 
           if [ -z "$APK_FILE" ]; then
-            echo "ERROR: No APK file was found under android/."
+            echo "ERROR: No APK file found. Flutter build APK did not create an output."
             exit 1
           fi
 
           if [ -z "$AAB_FILE" ]; then
-            echo "ERROR: No AAB file was found under android/."
+            echo "ERROR: No AAB file found. Flutter build appbundle did not create an output."
             exit 1
           fi
 
           cp "$APK_FILE" artifacts/School-Management-System.apk
           cp "$AAB_FILE" artifacts/School-Management-System.aab
 
-          echo "Prepared files:"
+          echo "Files prepared for upload:"
           ls -lh artifacts/
 
       - name: Upload APK and AAB
