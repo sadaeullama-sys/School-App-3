@@ -1,0 +1,66 @@
+name: Build School Management System APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android project files
+        run: flutter create --project-name school_management_system --org com.ilyasmobile --platforms=android .
+
+      - name: Set Android application ID
+        shell: bash
+        run: |
+          set -e
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/applicationId = ".*"/applicationId = "com.ilyasmobile.schoolmanagementsystem"/' android/app/build.gradle.kts
+          elif [ -f android/app/build.gradle ]; then
+            sed -i "s/applicationId .*/applicationId 'com.ilyasmobile.schoolmanagementsystem'/" android/app/build.gradle
+          else
+            echo 'Android Gradle file not found' >&2
+            exit 1
+          fi
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Generate launcher icon
+        run: dart run flutter_launcher_icons
+
+      - name: Analyze Dart source
+        run: flutter analyze lib --no-fatal-infos --no-fatal-warnings
+
+      - name: Build release APK (no GitHub signing secrets required)
+        run: flutter build apk --release
+
+      - name: Verify APK
+        run: test -s build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: school-management-system-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
