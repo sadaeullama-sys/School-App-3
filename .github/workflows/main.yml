@@ -79,16 +79,19 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           p = Path("android/app/build.gradle.kts")
           s = p.read_text()
 
-          # Add the release signing configuration inside android { }.
-          if 'create("release")' not in s and 'getByName("release")' not in s:
-              block = """
+          # Add a second android {} configuration block. Gradle merges
+          # Android extension configuration blocks, so this avoids relying
+          # on Flutter-template-specific release block formatting.
+          signing = r"""
+
+          // Added by CI: use the existing Play upload key for release builds.
+          android {
               signingConfigs {
-                  create("release") {
+                  maybeCreate("release").apply {
                       val props = java.util.Properties()
                       val propsFile = rootProject.file("key.properties")
                       require(propsFile.exists()) { "android/key.properties is missing" }
@@ -99,51 +102,16 @@ jobs:
                       keyPassword = props["keyPassword"] as String
                   }
               }
-
+              buildTypes.configureEach {
+                  if (name == "release") {
+                      signingConfig = signingConfigs.getByName("release")
+                  }
+              }
+          }
           """
-              marker = "    buildTypes {"
-              if marker not in s:
-                  marker = "  buildTypes {"
-              if marker not in s:
-                  raise SystemExit("Could not find buildTypes block in android/app/build.gradle.kts")
-              s = s.replace(marker, block + marker, 1)
-
-          # Flutter's generated Kotlin DSL commonly uses release { ... }
-          # rather than getByName("release") { ... }. Replace debug signing
-          # in the release build type regardless of that syntax.
-          m = re.search(r'(?m)^([ \\t]*)(release)\\s*\\{', s)
-          if not m:
-              m = re.search(r'(?m)^([ \\t]*)create\\("release"\\)\\s*\\{', s)
-          if not m:
-              raise SystemExit("Could not find release build type block in android/app/build.gradle.kts")
-
-          # Find matching closing brace for the release block.
-          open_brace = s.find("{", m.start())
-          depth = 0
-          close_brace = None
-          for i in range(open_brace, len(s)):
-              if s[i] == "{":
-                  depth += 1
-              elif s[i] == "}":
-                  depth -= 1
-                  if depth == 0:
-                      close_brace = i
-                      break
-          if close_brace is None:
-              raise SystemExit("Could not parse release build type block")
-
-          body = s[open_brace+1:close_brace]
-          body = re.sub(
-              r'signingConfig\\s*=\\s*signingConfigs\\.getByName\\("debug"\\)',
-              'signingConfig = signingConfigs.getByName("release")',
-              body
-          )
-          if 'signingConfig = signingConfigs.getByName("release")' not in body:
-              body = '\\n            signingConfig = signingConfigs.getByName("release")' + body
-          s = s[:open_brace+1] + body + s[close_brace:]
-
-          p.write_text(s)
-          print("Release signing configuration successfully added.")
+          if "// Added by CI: use the existing Play upload key" not in s:
+              p.write_text(s.rstrip() + signing + "\n")
+          print("Release signing configuration appended.")
           PY
 
       - name: Build release APK (Lint workaround)
