@@ -79,33 +79,59 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           p = Path("android/app/build.gradle.kts")
           s = p.read_text()
-          if "signingConfigs" not in s:
-              marker = "    buildTypes {"
-              signing = '''    signingConfigs {
+
+          # Always ensure a RELEASE signing config exists. The generated
+          # Flutter template may mention signingConfigs for DEBUG only.
+          if 'create("release")' not in s and "maybeCreate(\"release\")" not in s:
+              release_config = """
+              signingConfigs {
                   create("release") {
                       val props = java.util.Properties()
                       val propsFile = rootProject.file("key.properties")
+                      require(propsFile.exists()) { "android/key.properties is missing" }
                       props.load(propsFile.inputStream())
-                      storeFile = file(props["storeFile"] as String)
+                      storeFile = rootProject.file(props["storeFile"] as String)
                       storePassword = props["storePassword"] as String
                       keyAlias = props["keyAlias"] as String
                       keyPassword = props["keyPassword"] as String
                   }
               }
 
-          '''
+          """
+              # Insert the config directly inside the android { } block,
+              # before buildTypes. Do not rely on whether the word
+              # signingConfigs appears elsewhere in the template.
+              marker = "    buildTypes {"
               if marker not in s:
-                  raise SystemExit("Could not find buildTypes in generated Gradle file.")
-              s = s.replace(marker, signing + marker, 1)
-          s = s.replace('''            signingConfig = signingConfigs.getByName("debug")''',
-                        '''            signingConfig = signingConfigs.getByName("release")''')
-          if 'signingConfig = signingConfigs.getByName("release")' not in s:
-              s = s.replace('''        getByName("release") {''',
-                            '''        getByName("release") {
-              signingConfig = signingConfigs.getByName("release")''', 1)
+                  marker = "  buildTypes {"
+              if marker not in s:
+                  raise SystemExit("Could not find buildTypes in android/app/build.gradle.kts")
+              s = s.replace(marker, release_config + marker, 1)
+
+          # Make the release build use the upload key.
+          release_block = re.search(r'(?m)^\\s*getByName\\("release"\\)\\s*\\{', s)
+          if release_block:
+              block_start = release_block.end()
+              if 'signingConfig = signingConfigs.getByName("release")' not in s[block_start:block_start+500]:
+                  s = s[:block_start] + '\\n            signingConfig = signingConfigs.getByName("release")' + s[block_start:]
+          else:
+              raise SystemExit('Could not find getByName("release") build type')
+
+          # Remove any accidental debug signing assignment in release block.
+          s = re.sub(
+              r'(getByName\\("release"\\)\\s*\\{[^}]*?)signingConfig\\s*=\\s*signingConfigs\\.getByName\\("debug"\\)',
+              r'\\1signingConfig = signingConfigs.getByName("release")',
+              s,
+              count=1,
+              flags=re.S
+          )
+
           p.write_text(s)
+          print("Release signing configuration added.")
           PY
 
       - name: Build release APK (Lint workaround)
