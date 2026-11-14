@@ -1,4 +1,4 @@
-name: Build School Management System APK
+name: Build School Management System APK and AAB
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Release APK
+    name: Build APK and Play Store AAB
     runs-on: ubuntu-latest
 
     steps:
@@ -30,12 +30,11 @@ jobs:
           channel: stable
           cache: true
 
-      # This repository contains lib/ and pubspec.yaml but no Android
-      # platform folder, so generate the Android project files here.
-      - name: Generate Android platform
+      # Your repository has lib/ and pubspec.yaml but no android/ folder.
+      - name: Generate Android platform files
         run: flutter create --project-name school_management_system --org com.ilyasmobile --platforms android .
 
-      - name: Set Android application ID
+      - name: Set the existing application ID
         shell: bash
         run: |
           if [ -f android/app/build.gradle.kts ]; then
@@ -50,38 +49,96 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      - name: Generate launcher icon
-        run: dart run flutter_launcher_icons
+      # The Play Store AAB must be signed with the SAME upload key
+      # used for the existing Play Console app.
+      - name: Configure Play Store upload signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "Missing signing secrets. Add the four Android signing secrets in GitHub before building a Play Store AAB."
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$GITHUB_WORKSPACE/upload-keystore.jks"
+          if [ ! -s "$GITHUB_WORKSPACE/upload-keystore.jks" ]; then
+            echo "Keystore could not be decoded."
+            exit 1
+          fi
+          cat > "$GITHUB_WORKSPACE/android/key.properties" <<EOF
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyPassword=$ANDROID_KEY_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          storeFile=../upload-keystore.jks
+          EOF
 
-      # Skip Android's lint tasks because the current Android Gradle
-      # lint analyzer crashes in this project's GitHub build environment.
-      - name: Build release APK
+      - name: Configure release signing
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("android/app/build.gradle.kts")
+          s = p.read_text()
+          if "signingConfigs" not in s:
+              marker = "    buildTypes {"
+              signing = '''    signingConfigs {
+                  create("release") {
+                      val props = java.util.Properties()
+                      val propsFile = rootProject.file("key.properties")
+                      props.load(propsFile.inputStream())
+                      storeFile = file(props["storeFile"] as String)
+                      storePassword = props["storePassword"] as String
+                      keyAlias = props["keyAlias"] as String
+                      keyPassword = props["keyPassword"] as String
+                  }
+              }
+
+          '''
+              if marker not in s:
+                  raise SystemExit("Could not find buildTypes in generated Gradle file.")
+              s = s.replace(marker, signing + marker, 1)
+          s = s.replace('''            signingConfig = signingConfigs.getByName("debug")''',
+                        '''            signingConfig = signingConfigs.getByName("release")''')
+          if 'signingConfig = signingConfigs.getByName("release")' not in s:
+              s = s.replace('''        getByName("release") {''',
+                            '''        getByName("release") {
+              signingConfig = signingConfigs.getByName("release")''', 1)
+          p.write_text(s)
+          PY
+
+      - name: Build release APK (Lint workaround)
         working-directory: android
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease \
-            -x lint \
-            -x lintDebug \
-            -x lintRelease \
-            -x lintAnalyzeDebug \
-            -x lintAnalyzeRelease \
-            -x lintVitalAnalyzeRelease \
-            -x lintVitalReportRelease \
-            -x lintVitalRelease \
-            --stacktrace
+            -x lint -x lintDebug -x lintRelease \
+            -x lintAnalyzeDebug -x lintAnalyzeRelease \
+            -x lintVitalAnalyzeRelease -x lintVitalReportRelease \
+            -x lintVitalRelease --stacktrace
 
-      - name: Verify APK
+      - name: Build signed Play Store AAB (Lint workaround)
+        working-directory: android
         run: |
-          APK="build/app/outputs/flutter-apk/app-release.apk"
-          if [ ! -s "$APK" ]; then
-            echo "APK was not generated"
-            exit 1
-          fi
-          ls -lh "$APK"
+          ./gradlew bundleRelease \
+            -x lint -x lintDebug -x lintRelease \
+            -x lintAnalyzeDebug -x lintAnalyzeRelease \
+            -x lintVitalAnalyzeRelease -x lintVitalReportRelease \
+            -x lintVitalRelease --stacktrace
 
-      - name: Upload APK
+      - name: Verify APK and AAB
+        run: |
+          test -s android/app/build/outputs/apk/release/app-release.apk
+          test -s android/app/build/outputs/bundle/release/app-release.aab
+          ls -lh android/app/build/outputs/apk/release/app-release.apk
+          ls -lh android/app/build/outputs/bundle/release/app-release.aab
+
+      - name: Upload APK and AAB
         uses: actions/upload-artifact@v4
         with:
-          name: School-Management-System-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: School-Management-System-APK-and-AAB
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
